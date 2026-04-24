@@ -1,13 +1,13 @@
-import { getRandomGame } from "@/lib/igdb";
+import { getRandomTriviaRound } from "@/lib/igdb";
 
 export async function GET() {
   try {
-    const game = await getRandomGame();
+    const game = await getRandomTriviaRound(6);
 
     if (!game) {
       return Response.json(
         { error: "No games found. Check IGDB API credentials." },
-        { status: 404 }
+        { status: 404 },
       );
     }
 

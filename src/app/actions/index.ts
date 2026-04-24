@@ -1,14 +1,14 @@
 "use server";
 
-import { getRandomGame, searchGames } from "@/lib/igdb";
-import type { GameData, GameSuggestion } from "@/types/igdb";
+import { getRandomTriviaRound, searchGames } from "@/lib/igdb";
+import type { GameSuggestion, TriviaRoundData } from "@/types/igdb";
 
-export async function fetchGameAction(): Promise<GameData | null> {
-  return getRandomGame();
+export async function fetchGameAction(): Promise<TriviaRoundData | null> {
+  return getRandomTriviaRound(6);
 }
 
 export async function searchGamesAction(
-  query: string
+  query: string,
 ): Promise<GameSuggestion[]> {
   if (!query.trim()) return [];
   return searchGames(query);

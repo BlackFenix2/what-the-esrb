@@ -1,10 +1,15 @@
-import type { GameData, GameSuggestion, IGDBGame } from "@/types/igdb";
+import type {
+  GameData,
+  GameSuggestion,
+  IGDBGame,
+  TriviaRoundData,
+} from "@/types/igdb";
 
 const IGDB_API_URL = "https://api.igdb.com/v4";
 const TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token";
 
-// ESRB rating category = 1 in IGDB
-const ESRB_CATEGORY = 1;
+// ESRB organization = 1 in IGDB
+const ESRB_ORGANIZATION = 1;
 
 // ESRB rating number → label mapping
 const ESRB_RATING_LABELS: Record<number, string> = {
@@ -17,18 +22,27 @@ const ESRB_RATING_LABELS: Record<number, string> = {
   12: "AO",
 };
 
-const ESRB_RATING_NAMES: Record<number, string> = {
-  6: "Rating Pending",
-  7: "Early Childhood",
-  8: "Everyone",
-  9: "Everyone 10+",
-  10: "Teen",
-  11: "Mature 17+",
-  12: "Adults Only 18+",
+const ESRB_RATING_NAMES_BY_LABEL: Record<string, string> = {
+  RP: "Rating Pending",
+  EC: "Early Childhood",
+  E: "Everyone",
+  "E10+": "Everyone 10+",
+  T: "Teen",
+  M: "Mature 17+",
+  AO: "Adults Only 18+",
 };
 
 function buildCoverUrl(imageId: string): string {
   return `https://images.igdb.com/igdb/image/upload/t_cover_big/${imageId}.jpg`;
+}
+
+function shuffleArray<T>(items: T[]): T[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
 }
 
 // --- Token caching (module-level, server-side only) ---
@@ -46,7 +60,7 @@ async function getAccessToken(): Promise<string> {
 
   if (!clientId || !clientSecret) {
     throw new Error(
-      "Missing TWITCH_CLIENT_ID or TWITCH_CLIENT_SECRET environment variables"
+      "Missing TWITCH_CLIENT_ID or TWITCH_CLIENT_SECRET environment variables",
     );
   }
 
@@ -108,12 +122,16 @@ async function igdbFetch<T>(endpoint: string, body: string): Promise<T> {
  */
 export async function getRandomGame(): Promise<GameData | null> {
   // First, count how many games match our criteria
-  const countResult = await igdbFetch<Array<{ count: number }>>(
+  const countResult = await igdbFetch<
+    { count: number } | Array<{ count: number }>
+  >(
     "games/count",
-    `where age_ratings.category = ${ESRB_CATEGORY} & age_ratings.content_descriptions != null & cover != null & rating_count > 5;`
+    `where age_ratings.organization = ${ESRB_ORGANIZATION} & age_ratings.rating_content_descriptions != null & cover != null & rating_count > 5;`,
   );
 
-  const total = countResult[0]?.count ?? 0;
+  const total = Array.isArray(countResult)
+    ? (countResult[0]?.count ?? 0)
+    : (countResult.count ?? 0);
   if (total === 0) return null;
 
   // Pick a random offset within the pool
@@ -121,16 +139,85 @@ export async function getRandomGame(): Promise<GameData | null> {
 
   const games = await igdbFetch<IGDBGame[]>(
     "games",
-    `fields name, cover.image_id, age_ratings.category, age_ratings.rating, age_ratings.synopsis, age_ratings.content_descriptions.category, age_ratings.content_descriptions.description;
-where age_ratings.category = ${ESRB_CATEGORY} & age_ratings.content_descriptions != null & cover != null & rating_count > 5;
+    `fields name, cover.image_id, age_ratings.organization, age_ratings.rating_category.rating, age_ratings.synopsis, age_ratings.rating_content_descriptions.description, age_ratings.category, age_ratings.rating, age_ratings.content_descriptions.description;
+where age_ratings.organization = ${ESRB_ORGANIZATION} & age_ratings.rating_content_descriptions != null & cover != null & rating_count > 5;
 offset ${offset};
-limit 1;`
+limit 1;`,
   );
 
   const game = games[0];
   if (!game) return null;
 
   return parseGame(game);
+}
+
+/**
+ * Fetch a random game that has an ESRB rating summary (content description text)
+ * and content descriptors.
+ */
+async function getRandomChoices(
+  correctName: string,
+  choiceCount: number,
+): Promise<string[]> {
+  const targetDistractors = Math.max(0, choiceCount - 1);
+
+  const countResult = await igdbFetch<
+    { count: number } | Array<{ count: number }>
+  >(
+    "games/count",
+    "where game_type = (0,8,9) & version_parent = null & rating_count > 5 & name != null;",
+  );
+
+  const total = Array.isArray(countResult)
+    ? (countResult[0]?.count ?? 0)
+    : (countResult.count ?? 0);
+
+  const distractors = new Set<string>();
+  const maxAttempts = 5;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (distractors.size >= targetDistractors || total === 0) break;
+
+    const batchSize = Math.min(
+      100,
+      Math.max(30, (targetDistractors - distractors.size) * 6),
+    );
+    const maxOffset = Math.max(total - batchSize, 0);
+    const offset = Math.floor(Math.random() * (maxOffset + 1));
+
+    const games = await igdbFetch<IGDBGame[]>(
+      "games",
+      `fields name;
+where game_type = (0,8,9) & version_parent = null & rating_count > 5 & name != null;
+offset ${offset};
+limit ${batchSize};`,
+    );
+
+    for (const game of games) {
+      const name = game.name?.trim();
+      if (!name) continue;
+      if (name.toLowerCase() === correctName.toLowerCase()) continue;
+      distractors.add(name);
+      if (distractors.size >= targetDistractors) break;
+    }
+  }
+
+  return shuffleArray([
+    correctName,
+    ...Array.from(distractors).slice(0, targetDistractors),
+  ]);
+}
+
+export async function getRandomTriviaRound(
+  choiceCount = 6,
+): Promise<TriviaRoundData | null> {
+  const game = await getRandomGame();
+  if (!game) return null;
+
+  const choices = await getRandomChoices(game.name, choiceCount);
+  if (choices.length < 2) return null;
+
+  return { game, choices };
 }
 
 /**
@@ -143,8 +230,8 @@ export async function searchGames(query: string): Promise<GameSuggestion[]> {
     "games",
     `fields name;
 search "${query.replace(/"/g, "")}";
-where category = (0,8,9) & version_parent = null;
-limit 10;`
+where game_type = (0,8,9) & version_parent = null;
+limit 10;`,
   );
 
   return games.map((g) => ({ id: g.id, name: g.name }));
@@ -152,15 +239,34 @@ limit 10;`
 
 function parseGame(game: IGDBGame): GameData {
   const esrbRating = game.age_ratings?.find(
-    (r) => r.category === ESRB_CATEGORY
+    (r) =>
+      r.organization === ESRB_ORGANIZATION || r.category === ESRB_ORGANIZATION,
   );
 
-  const ratingNumber = esrbRating?.rating ?? 8;
-  const esrbLabel = ESRB_RATING_LABELS[ratingNumber] ?? "E";
-  const esrbName = ESRB_RATING_NAMES[ratingNumber] ?? "Everyone";
+  const ratingCategory = esrbRating?.rating_category;
+  let esrbLabel = "E";
+
+  if (ratingCategory && typeof ratingCategory === "object") {
+    const normalized = ratingCategory.rating.replace(/\s+/g, "").toUpperCase();
+    esrbLabel = normalized === "E10" ? "E10+" : normalized;
+  } else {
+    const legacyRating =
+      (typeof ratingCategory === "number" ? ratingCategory : undefined) ??
+      esrbRating?.rating ??
+      8;
+    esrbLabel = ESRB_RATING_LABELS[legacyRating] ?? "E";
+  }
+
+  const esrbName = ESRB_RATING_NAMES_BY_LABEL[esrbLabel] ?? "Everyone";
 
   const contentDescriptors =
-    esrbRating?.content_descriptions?.map((d) => d.description).filter(Boolean) ?? [];
+    esrbRating?.rating_content_descriptions
+      ?.map((d) => d.description)
+      .filter(Boolean) ??
+    esrbRating?.content_descriptions
+      ?.map((d) => d.description)
+      .filter(Boolean) ??
+    [];
 
   return {
     id: game.id,

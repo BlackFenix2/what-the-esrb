@@ -1,87 +1,73 @@
 "use client";
 
-import { use, useRef, useState, startTransition } from "react";
-import type { GameData, GameSuggestion, GameResult } from "@/types/igdb";
-import { fetchGameAction, searchGamesAction } from "@/app/actions";
+import { use, useState } from "react";
+import type { GameResult, TriviaRoundData } from "@/types/igdb";
+import { fetchGameAction } from "@/app/actions";
 import EsrbBadge from "./EsrbBadge";
 import Image from "next/image";
 
-type GamePhase = "guessing" | "revealed";
+type GamePhase = "guessing" | "revealed" | "finished";
+const TOTAL_ROUNDS = 10;
 
 interface Props {
-  initialGamePromise: Promise<GameData | null>;
+  initialGamePromise: Promise<TriviaRoundData | null>;
 }
 
 export default function TriviaGame({ initialGamePromise }: Props) {
-  const [gamePromise, setGamePromise] =
-    useState<Promise<GameData | null>>(initialGamePromise);
+  const [roundPromise, setRoundPromise] =
+    useState<Promise<TriviaRoundData | null>>(initialGamePromise);
 
   // use() suspends until the promise resolves; Suspense in the parent shows fallback
-  const game = use(gamePromise);
+  const round = use(roundPromise);
+  const game = round?.game ?? null;
+  const choices = round?.choices ?? [];
 
   const [phase, setPhase] = useState<GamePhase>("guessing");
-  const [guess, setGuess] = useState("");
-  const [suggestions, setSuggestions] = useState<GameSuggestion[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [result, setResult] = useState<GameResult | null>(null);
   const [history, setHistory] = useState<GameResult[]>([]);
   const [score, setScore] = useState({ correct: 0, total: 0 });
+  const [currentRound, setCurrentRound] = useState(1);
   const [isPending, setIsPending] = useState(false);
 
-  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const suggestionsRef = useRef<HTMLUListElement>(null);
-
-  function nextGame() {
-    setIsPending(true);
-    setPhase("guessing");
-    setGuess("");
-    setSuggestions([]);
-    setResult(null);
-    startTransition(() => {
-      setGamePromise(fetchGameAction());
+  function loadRound(): void {
+    const nextRoundPromise = fetchGameAction().finally(() => {
       setIsPending(false);
     });
+    setRoundPromise(nextRoundPromise);
   }
 
-  async function fetchSuggestions(query: string) {
-    if (query.length < 2) {
-      setSuggestions([]);
+  function goToNextRound() {
+    if (currentRound >= TOTAL_ROUNDS) {
+      setPhase("finished");
       return;
     }
-    const results = await searchGamesAction(query);
-    setSuggestions(results);
+
+    setIsPending(true);
+    setPhase("guessing");
+    setResult(null);
+    setCurrentRound((prev) => prev + 1);
+    loadRound();
   }
 
-  function handleInputChange(value: string) {
-    setGuess(value);
-    setShowSuggestions(true);
-    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    searchTimeout.current = setTimeout(() => fetchSuggestions(value), 300);
+  function restartGame() {
+    setIsPending(true);
+    setPhase("guessing");
+    setResult(null);
+    setHistory([]);
+    setScore({ correct: 0, total: 0 });
+    setCurrentRound(1);
+    loadRound();
   }
 
-  function selectSuggestion(name: string) {
-    setGuess(name);
-    setSuggestions([]);
-    setShowSuggestions(false);
-    inputRef.current?.focus();
-  }
-
-  function handleBlur(e: React.FocusEvent) {
-    if (suggestionsRef.current?.contains(e.relatedTarget as Node)) return;
-    setShowSuggestions(false);
-  }
-
-  function submitGuess(guessedName: string) {
+  function submitChoice(choice: string) {
     if (!game) return;
 
-    const isCorrect =
-      guessedName.trim().toLowerCase() === game.name.toLowerCase();
+    const isCorrect = choice.trim().toLowerCase() === game.name.toLowerCase();
 
     const gameResult: GameResult = {
       game,
       result: isCorrect ? "correct" : "incorrect",
-      guess: guessedName.trim() || null,
+      guess: choice,
     };
 
     setResult(gameResult);
@@ -91,21 +77,6 @@ export default function TriviaGame({ initialGamePromise }: Props) {
       total: prev.total + 1,
     }));
     setPhase("revealed");
-    setSuggestions([]);
-  }
-
-  function skipGame() {
-    if (!game) return;
-    const gameResult: GameResult = {
-      game,
-      result: "skipped",
-      guess: null,
-    };
-    setResult(gameResult);
-    setHistory((prev) => [...prev, gameResult]);
-    setScore((prev) => ({ ...prev, total: prev.total + 1 }));
-    setPhase("revealed");
-    setSuggestions([]);
   }
 
   if (!game) {
@@ -117,7 +88,7 @@ export default function TriviaGame({ initialGamePromise }: Props) {
           Could not find a game with ESRB data. Check your API credentials.
         </p>
         <button
-          onClick={nextGame}
+          onClick={restartGame}
           className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg transition-colors"
         >
           Try Again
@@ -136,11 +107,10 @@ export default function TriviaGame({ initialGamePromise }: Props) {
             {score.correct}/{score.total}
           </span>
         </span>
-        {score.total > 0 && (
-          <span>
-            {Math.round((score.correct / score.total) * 100)}% correct
-          </span>
-        )}
+        <span>
+          Round <span className="text-white font-bold">{currentRound}</span>/
+          {TOTAL_ROUNDS}
+        </span>
       </div>
 
       {/* Game Card */}
@@ -153,7 +123,7 @@ export default function TriviaGame({ initialGamePromise }: Props) {
               Guess the Game Title
             </h2>
             <p className="text-sm text-gray-400">
-              Based on the ESRB content description below
+              Choose 1 of 6 titles based on the ESRB descriptors below
             </p>
           </div>
         </div>
@@ -181,75 +151,20 @@ export default function TriviaGame({ initialGamePromise }: Props) {
           )}
         </div>
 
-        {/* Synopsis */}
-        {game.synopsis && (
-          <div className="mb-4">
-            <h3 className="text-xs uppercase tracking-widest text-gray-500 mb-2 font-semibold">
-              Rating Summary
-            </h3>
-            <p className="text-gray-300 text-sm leading-relaxed">
-              {game.synopsis}
-            </p>
-          </div>
-        )}
-
         {/* Answer Section */}
         {phase === "guessing" && (
           <div className="mt-6">
-            <div className="relative">
-              <input
-                ref={inputRef}
-                type="text"
-                value={guess}
-                onChange={(e) => handleInputChange(e.target.value)}
-                onBlur={handleBlur}
-                onFocus={() => guess.length >= 2 && setShowSuggestions(true)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && guess.trim()) {
-                    submitGuess(guess);
-                  } else if (e.key === "Escape") {
-                    setShowSuggestions(false);
-                  }
-                }}
-                placeholder="Type the game title…"
-                className="w-full px-4 py-3 bg-gray-700 border border-gray-600 text-white placeholder-gray-500 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition"
-                autoComplete="off"
-              />
-
-              {showSuggestions && suggestions.length > 0 && (
-                <ul
-                  ref={suggestionsRef}
-                  className="absolute z-10 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-xl overflow-hidden"
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {choices.map((choice) => (
+                <button
+                  key={choice}
+                  type="button"
+                  onClick={() => submitChoice(choice)}
+                  className="px-4 py-3 bg-gray-700 hover:bg-gray-600 text-gray-200 text-left font-medium rounded-lg border border-gray-600 transition-colors"
                 >
-                  {suggestions.map((s) => (
-                    <li key={s.id}>
-                      <button
-                        type="button"
-                        className="w-full text-left px-4 py-2.5 text-gray-200 hover:bg-gray-600 transition-colors text-sm"
-                        onMouseDown={() => selectSuggestion(s.name)}
-                      >
-                        {s.name}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div className="flex gap-3 mt-3">
-              <button
-                onClick={() => submitGuess(guess)}
-                disabled={!guess.trim()}
-                className="flex-1 px-4 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-semibold rounded-lg transition-colors"
-              >
-                Submit Guess
-              </button>
-              <button
-                onClick={skipGame}
-                className="px-4 py-3 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition-colors"
-              >
-                Skip
-              </button>
+                  {choice}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -273,18 +188,17 @@ export default function TriviaGame({ initialGamePromise }: Props) {
                   ❌ Incorrect
                   {result.guess && (
                     <span className="block text-sm font-normal mt-1 opacity-80">
-                      You guessed: &ldquo;{result.guess}&rdquo;
+                      You chose: &ldquo;{result.guess}&rdquo;
                     </span>
                   )}
                 </>
               )}
-              {result.result === "skipped" && "⏭️ Skipped"}
             </div>
 
             {/* Game Details */}
             <div className="flex gap-4 items-start">
               {game.coverUrl && (
-                <div className="flex-shrink-0">
+                <div className="shrink-0">
                   <Image
                     src={game.coverUrl}
                     alt={`Cover art for ${game.name}`}
@@ -303,11 +217,34 @@ export default function TriviaGame({ initialGamePromise }: Props) {
             </div>
 
             <button
-              onClick={nextGame}
+              onClick={goToNextRound}
               disabled={isPending}
               className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold rounded-lg transition-colors"
             >
-              {isPending ? "Loading…" : "Next Game →"}
+              {isPending
+                ? "Loading…"
+                : currentRound >= TOTAL_ROUNDS
+                  ? "View Final Score"
+                  : "Next Round →"}
+            </button>
+          </div>
+        )}
+
+        {phase === "finished" && (
+          <div className="mt-6 space-y-4">
+            <div className="px-4 py-4 rounded-lg text-center bg-blue-900/30 border border-blue-700">
+              <h3 className="text-xl font-bold text-white">Game Complete</h3>
+              <p className="text-gray-300 mt-1">
+                Final score: {score.correct}/{TOTAL_ROUNDS} (
+                {Math.round((score.correct / TOTAL_ROUNDS) * 100)}%)
+              </p>
+            </div>
+            <button
+              onClick={restartGame}
+              disabled={isPending}
+              className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-semibold rounded-lg transition-colors"
+            >
+              {isPending ? "Loading…" : "Play Again"}
             </button>
           </div>
         )}

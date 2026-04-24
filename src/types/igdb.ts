@@ -4,11 +4,25 @@ export interface IGDBContentDescription {
   description: string;
 }
 
+export interface IGDBRatingContentDescription {
+  id: number;
+  description: string;
+}
+
+export interface IGDBAgeRatingCategory {
+  id: number;
+  rating: string;
+}
+
 export interface IGDBAgeRating {
   id: number;
-  category: number; // 1 = ESRB
-  rating: number;
+  organization?: number; // 1 = ESRB
+  rating_category?: number | IGDBAgeRatingCategory;
+  // Deprecated fields kept for compatibility during IGDB migration
+  category?: number;
+  rating?: number;
   synopsis?: string;
+  rating_content_descriptions?: IGDBRatingContentDescription[];
   content_descriptions?: IGDBContentDescription[];
 }
 
@@ -32,6 +46,11 @@ export interface GameData {
   esrbRatingLabel: string;
   synopsis: string | null;
   contentDescriptors: string[];
+}
+
+export interface TriviaRoundData {
+  game: GameData;
+  choices: string[];
 }
 
 export interface GameSuggestion {
